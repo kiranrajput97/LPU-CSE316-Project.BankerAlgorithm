@@ -1,0 +1,21 @@
+#include<stdio.h>
+#include<semaphore.h>
+ #include"banker.h"
+ #include"helper.h"
+ #include"UI.h"
+
+struct threadTickBehaviour
+{
+    int lifeTicks, currentTick;
+
+    sem_t* tickWaiter;
+
+    sem_t* onTickSem;
+
+    int processIndex;
+    struct BankerData* banker;
+
+    int lastReqResponse;
+
+    int **perTickResourceDemandMatrix;
+};
