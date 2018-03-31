@@ -1,0 +1,21 @@
+#include<stdio.h>
+#include<semaphore.h>
+ #include"banker.h"
+ #include"helper.h"
+ #include"UI.h"
+ 
+void init(struct BankerData* bd)
+{
+    struct threadTickBehaviour tb[5];
+    sem_t twaiter[5],onTickSem;
+    int i;
+    sem_init(&onTickSem, 0, 0);
+    for(i=0;i<5;++i){
+        sem_init(&twaiter[i], 0, 0);
+        initTickBehaviour(&tb[i], 2, (int*[]){(int[]){2,10},(int[]){0,1}}, &twaiter[i], &onTickSem, i, bd);
+    }
+
+    pthread_t userThreads[5];
+    for(i=0;i<1;++i)pthread_create(&userThreads[i], NULL, threadFunction, &tb[i]);
+    run(1,tb,twaiter,&onTickSem);
+}
