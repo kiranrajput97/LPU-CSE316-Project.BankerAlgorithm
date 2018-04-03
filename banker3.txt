@@ -1,0 +1,44 @@
+#include<stdio.h>
+#include<semaphore.h>
+ #include"banker.h"
+ #include"helper.h"
+ #include"UI.h"
+
+void run(int threadCount, struct threadTickBehaviour tbarray[5], sem_t* twaiter, sem_t* onTickSem)
+{
+    int ticksDone,newCount;
+    
+    while(threadCount>0)
+    {
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)sem_post(&twaiter[ticksDone]);
+        ticksDone = 0;
+
+        while(ticksDone<threadCount)
+        {
+            sem_wait(onTickSem);
+            ++ticksDone;
+        }
+
+        newCount = 0;
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)
+            if(tbarray[ticksDone].currentTick!=tbarray[ticksDone].lifeTicks)
+                ++newCount;
+        threadCount = newCount;
+
+        Banker_displayBanker(tbarray[0].banker);
+
+        newCount = 1;
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)
+        {   if(tbarray[ticksDone].lastReqResponse == 1)
+            {
+                newCount = 0;
+                break;
+            }
+        }
+        if(newCount)
+        {
+            printf("Oh no...! There were errors,\n");
+            break;
+        }
+    }
+}
