@@ -1,0 +1,305 @@
+
+ #include<stdio.h>
+ #include<stdlib.h>
++#include<string.h>
++#include<stdarg.h>
+ #include"helper.h"
+ #include"UI.h"
+ 
+@@ -46,8 +48,11 @@ void UIframe_flush(struct UIframe *frame)
+     int i,j;
+     for(i=0;i<frame->height;++i)
+     {
+-        for(j=0;j<frame->width;++j)frame->screen[i][j]=' ';
++        // Fill the row with spaces.
++        memset(frame->screen[i], (int)' ', frame->width);
+     }
++    frame->cursor[0]=0;
++    frame->cursor[1]=0;
+ }
+ 
+ /*
+@@ -64,15 +69,25 @@ void UIframe_flush(struct UIframe *frame)
+                     It is a float value and must be between 0 and 1, inclusive.
+                     For eg. position 0.5 causes center alignment.
+ */
+-void UIframe_addLine(struct UIframe *frame, char *str, int startPos, int strLen, float position)
++void UIframe_addLineChars(struct UIframe *frame, char *str, int startPos, int strLen, float position)
+ {
+-    UIframe_setLine(frame,frame->cursor[0],str,startPos,strLen,position);
+-
+     // Increment cursor line.
+-    frame->cursor[0] += (strLen/frame->width)+1;
+-    frame->cursor[0] = frame->cursor[0]>frame->height-1?frame->height-1:frame->cursor[0];
++    frame->cursor[0] = UIframe_setLineChars(frame,frame->cursor[0],str,startPos,strLen,position) + 1;
++    frame->cursor[0] = frame->cursor[0]>frame->height-1?frame->height:frame->cursor[0];
+     frame->cursor[1]=0;
+ }
++void UIframe_addLine(struct UIframe *frame, char *str, int startPos, float position)
++{
++    UIframe_addLineChars(frame,  str, startPos, strlen(str)-startPos,position);
++}
++void UIframe_addLineAndBindTextFeilds(struct UIframe *frame, char *str, int startPos, float position, struct UITextField *textFieldArray)
++{
++    // Increment cursor line.
++    frame->cursor[0] = UIframe_setLineCharsAndBindTextFeilds(frame,frame->cursor[0],str,startPos,strlen(str),position,textFieldArray) + 1;
++    frame->cursor[0] = frame->cursor[0]>frame->height-1?frame->height:frame->cursor[0];
++    frame->cursor[1]=0;
++}
++
+ /*
+     This function prints the first strLen no. of chars. of the given string,
+     starting from startPos, to the frame's buffer.
+@@ -86,9 +101,11 @@ void UIframe_addLine(struct UIframe *frame, char *str, int startPos, int strLen,
+                 position is the relative position of the string in the line.
+                     It is a float value and must be between 0 and 1, inclusive.
+                     For eg. position 0.5 causes center alignment.
++                textFieldArray is an array of pointers to text field structures to bind within the frame.
+ 
++    Return: returns the line number which was last set by this function, usefull if there is text wrapping.
+ */
+-void UIframe_setLine(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position)
++int UIframe_internal_setLineChars(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position, struct UITextField *textFieldArray, int textFieldArrayCounter)
+ {
+     // Check for valid data.
+     if(frame==NULL||str==NULL||line>=frame->height)return;
+@@ -105,11 +122,58 @@ void UIframe_setLine(struct UIframe *frame, int line, char *str, int startPos, i
+     // Print the string to buffer.
+     for(;printableStrLen>0;++startPos,--printableStrLen)
+     {
++        if(str[startPos]=='\n')
++        {
++            // Newline character found...
++            extraStrLen+=printableStrLen;
++            ++startPos;
++            break;
++        }
++        // Check if textFieldArray is given and text field formater '%fn' is present
++        else if(textFieldArray!=NULL&&str[startPos]=='%'&&str[startPos+1]=='f')
++        {
++            // get integer after '%f'
++            int fieldlen=0,tmp=0;
++            char *p;
++            p = &str[startPos+2];
++            while(*p>'0'&&*p<'9')
++            {
++                fieldlen = fieldlen*10 + *p - '0';
++                ++tmp;
++                ++p;
++            }
++            fieldlen = clip(fieldlen,0,frame->width - startPos);
++            // Set values for the textField structure
++            textFieldArray[textFieldArrayCounter].charPos = bufferPos;
++            textFieldArray[textFieldArrayCounter].length = fieldlen;
++            textFieldArray[textFieldArrayCounter].linePos = line;
++            textFieldArray[textFieldArrayCounter].parentFrame = frame;
++            ++textFieldArrayCounter;
++            // Increment loop accordingly to skip the text field buffer part.
++            bufferPos += fieldlen;
++            startPos += 1+tmp;
++            printableStrLen -= 1+tmp;
++            continue;
++        }
+         frame->screen[line][bufferPos++] = str[startPos];
+     }
+-
+     // Print wrapped text
+-    if(frame->isTextWrappingEnabled && extraStrLen>0)UIframe_setLine(frame,line+1,str,startPos+printableStrLen,extraStrLen,0);
++    if(frame->isTextWrappingEnabled && extraStrLen>0)
++        return UIframe_internal_setLineChars(frame,line+1,str,startPos,extraStrLen,0,textFieldArray,textFieldArrayCounter);
++    // If no wrapping return current line number.
++    return line;
++}
++int UIframe_setLineCharsAndBindTextFeilds(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position, struct UITextField *textFieldArray)
++{
++    UIframe_internal_setLineChars(frame,line,str,startPos,strLen,position,textFieldArray,0);
++}
++int UIframe_setLineChars(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position)
++{
++    return UIframe_internal_setLineChars(frame,line,str,startPos,strLen,position,NULL,0);
++}
++int UIframe_setLine(struct UIframe *frame, int line, char *str, int startPos, float position)
++{
++    return UIframe_setLineChars(frame,frame->cursor[0],str,startPos,strlen(str)-startPos,position);
+ }
+ 
+ /*
+@@ -155,3 +219,42 @@ void UIframe_print(struct UIframe *frame, int x, int y)
+         printf("\n");
+     }
+ }
++
++/*-----------------------------------------------------*/
++//              UITextField code
++/*-----------------------------------------------------*/
++/*
++    This function initialises the passed UITextField structure from the passed UIframe.
++    A UITextField structure marks a small part of a UIFrame's line and can update its buffer seamlessly.
++    This helps make the program faster by allowing pre-generation of the UIFrame with constant strings 
++        and adding UITextField wherever changing values are required.
++*/
++void UItextField_getFromFrame(struct UITextField* field, struct UIframe* frame, int linePos, int charPos, int length)
++{
++    // check if parameters are valid
++    if(frame==NULL||field==NULL||linePos>frame->height-1||charPos>frame->width-1)return;
++    // Clip length to prevent going beyond width.
++    clip(length,0,frame->width - charPos);
++    field->linePos = linePos;
++    field->charPos = charPos;
++    field->parentFrame = frame;
++    field->length = length;
++}
++/*
++    This function updates the parent frames buffer with the string passed.
++    This works like printf() and accepts a format string wih variable arguments.
++*/
++void UItextField_setText(struct UITextField* field, char *str,...)
++{
++    // check if parameters are valid
++    if(field==NULL)return;
++    char *start = &field->parentFrame->screen[field->linePos][field->charPos];
++    // Flush the field
++    memset(start,' ',field->length);
++    char postFeildchar = field->parentFrame->screen[field->linePos][field->charPos+field->length];
++    va_list args;
++    va_start(args,str);
++    vsnprintf(start,field->length+1,str,args);
++    va_end(args);
++    field->parentFrame->screen[field->linePos][field->charPos+field->length] = postFeildchar;
++} 
+  
+16  UI.h
+@@ -8,12 +8,22 @@ struct UIframe{
+     char lborder,rborder,roof,floor;
+     char **screen;
+ };
++struct UITextField{
++    struct UIframe *parentFrame;
++    int length,linePos,charPos;
++};
+ 
+ void UIframe_init(struct UIframe *frame, int width, int height,
+                     char lborder, char rborder, char roof, char floor, int textWrappingEnabled, int bordersEnabled);
+-void UIframe_addLine(struct UIframe *frame, char *str, int startPos, int strLen, float position);
+-void UIframe_setLine(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position);
++void UIframe_addLine(struct UIframe *frame, char *str, int startPos, float position);
++void UIframe_addLineAndBindTextFeilds(struct UIframe *frame, char *str, int startPos, float position, struct UITextField *textFieldArray);
++void UIframe_addLineChars(struct UIframe *frame, char *str, int startPos, int strLen, float position);
++int UIframe_setLine(struct UIframe *frame, int line, char *str, int startPos, float position);
++int UIframe_setLineChars(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position);
++int UIframe_setLineCharsAndBindTextFeilds(struct UIframe *frame, int line, char *str, int startPos, int strLen, float position, struct UITextField *textFieldArray);
+ void UIframe_print(struct UIframe *frame, int x, int y);
+ void UIframe_flush(struct UIframe *frame);
+-void UI_header();
++
++void UItextField_getFromFrame(struct UITextField* field, struct UIframe* frame, int linePos, int charPos, int length);
++void UItextField_setText(struct UITextField* field, char *str,...);
+ #endif // __UI_C__ 
+  
+65  banker.c
+@@ -76,14 +76,19 @@ void Banker_destroy(struct BankerData* banker)
+ */
+ int Banker_freeResource(struct BankerData *banker,int processIndex, int resourceIndex, int resourceCount)
+ {
++    // Use a mutex lock to prevent concurrent access to the banker's data.
++    pthread_mutex_lock(&(banker->concurrencyLock));
++
+     // Check for the validity of the resourceIndex and the processIndex. Return if any of them is invalid.
+     if(resourceIndex<0 || resourceIndex>(banker->availableResourcesCount)-1
+-        || processIndex<0 || processIndex>(banker->processCount)-1) return -1;
+-
++        || processIndex<0 || processIndex>(banker->processCount)-1) 
++        {
++            // Unlock the mutex lock to allow other threads to allocate resources.
++            pthread_mutex_unlock(&(banker->concurrencyLock));
++            return -1;
++        }
+     if(resourceCount > banker->resourcesAllocatedMatrix[processIndex][resourceIndex])
+         resourceCount = banker->resourcesAllocatedMatrix[processIndex][resourceIndex];
+-    // Use a mutex lock to prevent concurrent access to the banker's data.
+-    pthread_mutex_lock(&(banker->concurrencyLock));
+ 
+     // Free the resource and return it to the banker.
+     // NOTE: the processes requiredRequiredMatrix is not updated as once the process frees its resources, it cannot reallocate them.
+@@ -94,6 +99,29 @@ int Banker_freeResource(struct BankerData *banker,int processIndex, int resource
+     pthread_mutex_unlock(&(banker->concurrencyLock));
+     return 1;
+ }
++/*
++    Frees all the resources from the caller and returns them to the banker.
++    This is a thread safe function. It uses mutex locks to acomplish thread safety.
++    Parameters: banker,         the BankerData structure storing the current state of the banker.
++                processIndex,   the process to free resources from.
++    Return:  1, on successfull freeing of the resource.
++            -1, if the passed processIndex is invalid.
++*/
++int Banker_freeAllResources(struct BankerData *banker,int processIndex)
++{
++    if(processIndex<0 || processIndex>(banker->processCount)-1) return -1;
++    int i;
++    // Use a mutex lock to prevent concurrent access to the banker's data.
++    pthread_mutex_lock(&(banker->concurrencyLock));
++    for(i=0;i<banker->availableResourcesCount;++i)
++    {
++        banker->availableResourcesArray[i] += banker->resourcesAllocatedMatrix[processIndex][i];
++        banker->resourcesAllocatedMatrix[processIndex][i] = 0;
++    }
++    // Unlock the mutex lock to allow other threads to access the banker's data.
++    pthread_mutex_unlock(&(banker->concurrencyLock));
++    return 1;
++}
+ 
+ /*
+     Gives resource to the caller if it is available and does not lead to an unsafe state.
+@@ -112,18 +140,25 @@ int Banker_freeResource(struct BankerData *banker,int processIndex, int resource
+ int Banker_requestResource(struct BankerData *banker,int processIndex, int resourceIndex, int resourceCount)
+ {
+     // Check for validity of passed parameters.
+-    if(resourceIndex<0 || resourceIndex>(banker->availableResourcesCount)-1)return -1;
+     if(processIndex<0 || processIndex>(banker->processCount)-1)return -2;
+-    if(resourceCount>(banker->resourcesDemandMatrix[processIndex][resourceIndex]) || resourceCount<0)return -3;
+-    // Check if requested resources are available.
+-    if(resourceCount>banker->availableResourcesArray[resourceIndex])return -5;
+-
+-    // This will be returned ny the function.
++    // This will be returned the the function.
+     int returnCode = 1;
+-    
++
+     // Use a mutex lock to prevent concurrent resource allocation.
+     pthread_mutex_lock(&(banker->concurrencyLock));
+ 
++    // Check for validity of passed parameters.
++    if(resourceIndex<0 || resourceIndex>(banker->availableResourcesCount)-1)returnCode = -1;
++    if(resourceCount+banker->resourcesAllocatedMatrix[processIndex][resourceIndex]>(banker->resourcesDemandMatrix[processIndex][resourceIndex]) || resourceCount<0)returnCode = -3;
++    // Check if requested resources are available.
++    if(resourceCount>banker->availableResourcesArray[resourceIndex])returnCode = -5;
++    if(returnCode<1)
++    {
++        // Unlock the mutex lock to allow other threads to allocate resources.
++        pthread_mutex_unlock(&(banker->concurrencyLock));
++        return returnCode;
++    }
++
+     // Allocate the resources to simulate if the banker will be in a safe state.
+     banker->resourcesAllocatedMatrix[processIndex][resourceIndex]+=resourceCount;
+     banker->availableResourcesArray[resourceIndex]-=resourceCount;
+@@ -249,7 +284,8 @@ void Banker_displayBanker(struct BankerData *data)
+     int i,j,k;
+     printf("\tBanker Data\n");
+     int** matrices[] = {data->resourcesDemandMatrix,data->resourcesAllocatedMatrix,data->resourcesRequiredMatrix};
+-    printf("\tAvailable Resources { ");for(k=0;k<data->availableResourcesCount;++k)
++    printf("\tAvailable Resources { ");
++    for(k=0;k<data->availableResourcesCount;++k)
+         printf("%d ",data->availableResourcesArray[k]);
+     printf("}\n");
+     for(k=0;k<arraylength(matrices);++k)
+@@ -267,8 +303,3 @@ void Banker_displayBanker(struct BankerData *data)
+         }
+     }
+ }
+-int init1(int resourceCount, int *resourcesMAX)
+-{
+-    printf("resourceCount = %d\n",resourceCount);
+-    return 0;
+-
