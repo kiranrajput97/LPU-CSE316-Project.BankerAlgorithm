@@ -1,0 +1,111 @@
+#include<stdio.h>
+#include<semaphore.h>
+ #include"banker.h"
+ #include"helper.h"
+ #include"UI.h"
+
+struct threadTickBehaviour
+{
+    int lifeTicks, currentTick;
+
+    sem_t* tickWaiter;
+
+    sem_t* onTickSem;
+
+    int processIndex;
+    struct BankerData* banker;
+
+    int lastReqResponse;
+
+    int **perTickResourceDemandMatrix;
+};
+void *threadFunction(void *tickBehaviour)
+{
+    struct threadTickBehaviour* behaviour = (struct threadTickBehaviour*)tickBehaviour;
+    int resourceCount,currentTick=0;
+    behaviour->currentTick=0;
+
+    while(currentTick<behaviour->lifeTicks)
+    {
+        sem_wait(behaviour->tickWaiter);
+
+        resourceCount = behaviour->perTickResourceDemandMatrix[currentTick][1];
+        if(resourceCount>0)behaviour->lastReqResponse = Banker_requestResource(behaviour->banker,
+                                                behaviour->processIndex,
+                                                behaviour->perTickResourceDemandMatrix[currentTick][0],
+                                                resourceCount);
+        else behaviour->lastReqResponse = Banker_freeResource(behaviour->banker,
+                                    behaviour->processIndex,
+                                    behaviour->perTickResourceDemandMatrix[currentTick][0], -resourceCount);
+        
+        if(behaviour->lastReqResponse == 1)
+        {
+            behaviour->currentTick += 1;
+            ++currentTick;
+        }
+        sem_post(behaviour->onTickSem);
+    }
+}
+void initTickBehaviour(struct threadTickBehaviour *tb, int lifeTicks, int **perTickResourceDemandMatrix, sem_t *tickWaiter, em_t *onTickSem, int processIndex, struct BankerData *banker)
+{
+    tb->lifeTicks=lifeTicks;
+    tb->banker = banker;
+    tb->processIndex = processIndex;
+    tb->tickWaiter = tickWaiter;
+    tb->perTickResourceDemandMatrix = perTickResourceDemandMatrix;
+    tb->onTickSem =onTickSem;
+}
+
+void run(int threadCount, struct threadTickBehaviour tbarray[5], sem_t* twaiter, sem_t* onTickSem)
+{
+    int ticksDone,newCount;
+    
+    while(threadCount>0)
+    {
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)sem_post(&twaiter[ticksDone]);
+        ticksDone = 0;
+
+        while(ticksDone<threadCount)
+        {
+            sem_wait(onTickSem);
+            ++ticksDone;
+        }
+
+        newCount = 0;
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)
+            if(tbarray[ticksDone].currentTick!=tbarray[ticksDone].lifeTicks)
+                ++newCount;
+        threadCount = newCount;
+
+        Banker_displayBanker(tbarray[0].banker);
+
+        newCount = 1;
+        for(ticksDone=0;ticksDone<threadCount;++ticksDone)
+        {   if(tbarray[ticksDone].lastReqResponse == 1)
+            {
+                newCount = 0;
+                break;
+            }
+        }
+        if(newCount)
+        {
+            printf("Oh no...! There were errors,\n");
+            break;
+        }
+    }
+}
+void init(struct BankerData* bd)
+{
+    struct threadTickBehaviour tb[5];
+    sem_t twaiter[5],onTickSem;
+    int i;
+    sem_init(&onTickSem, 0, 0);
+    for(i=0;i<5;++i){
+        sem_init(&twaiter[i], 0, 0);
+        initTickBehaviour(&tb[i], 2, (int*[]){(int[]){2,10},(int[]){0,1}}, &twaiter[i], &onTickSem, i, bd);
+    }
+
+    pthread_t userThreads[5];
+    for(i=0;i<1;++i)pthread_create(&userThreads[i], NULL, threadFunction, &tb[i]);
+    run(1,tb,twaiter,&onTickSem);
+}
